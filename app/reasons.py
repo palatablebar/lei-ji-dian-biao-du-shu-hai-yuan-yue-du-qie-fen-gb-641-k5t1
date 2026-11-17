@@ -42,6 +42,17 @@ REASONS: dict[str, dict[str, str]] = {
     "K_UNIT_ASSUMED": {"label": "单位按契约补齐", "level": "info"},
     "K_UNIT_CONVERTED": {"label": "单位已折算", "level": "info"},
     "K_DUPLICATE_IDENTICAL": {"label": "重复行已合并", "level": "info"},
+    # ---- M8 园区总分对账 ----
+    "Q_PARK_ROLE_UNKNOWN": {"label": "园区角色无法识别", "level": "error"},
+    "Q_PARK_MASTER_DUPLICATE": {"label": "总表角色重复", "level": "error"},
+    "Q_PARK_TENANT_UNKNOWN": {"label": "分表不在表计契约", "level": "error"},
+    "K_GAP_UNVERIFIED": {"label": "待查缺口 · 未摊给租户", "level": "warn"},
+    "K_GAP_MISSED_READ": {"label": "分表漏抄形成的缺口", "level": "warn"},
+    "K_GAP_PARTIAL_MONTH": {"label": "月中投运形成的缺口", "level": "warn"},
+    "K_TENANT_MISSED_READ": {"label": "分表当月漏抄", "level": "warn"},
+    "K_TENANT_PARTIAL_MONTH": {"label": "分表月中投运", "level": "info"},
+    "K_PARK_SUB_EXCEEDS_MASTER": {"label": "分表之和超过总表", "level": "warn"},
+    "K_ARCHIVE_SUPERSEDED": {"label": "旧版归档已保留", "level": "info"},
 }
 
 

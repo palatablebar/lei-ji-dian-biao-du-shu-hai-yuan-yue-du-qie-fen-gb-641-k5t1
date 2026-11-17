@@ -27,8 +27,11 @@ def test_rerun_keeps_row_counts(settings, store, batch_id):
     before = store.count_rows(batch_id)
     service.run(settings, store, sample="readings_dirty.csv")
     assert store.count_rows(batch_id) == before
-    assert before == {"meters": 8, "readings": 46, "intervals": 32,
-                      "allocations": 40, "bills": 16, "quarantine": 14}
+    # meters.csv 含 8 只台区表 + 5 只园区表（PM01/T01-T04）；脏样例无园区读数，
+    # 园区表不产生区间/分摊，park_months 与 park_tenants 均为 0。
+    assert before == {"meters": 13, "readings": 46, "intervals": 32,
+                      "allocations": 40, "bills": 16, "quarantine": 14,
+                      "park_months": 0, "park_tenants": 0}
 
 
 def test_four_accounts_balanced(run_result):

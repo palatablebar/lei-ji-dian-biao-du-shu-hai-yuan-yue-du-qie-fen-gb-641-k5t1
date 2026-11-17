@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CHINA_TZ = dt.timezone(dt.timedelta(hours=8), "Asia/Shanghai")
 UTC = dt.timezone.utc
 
-RULE_VERSION = "meterback/1.0.0"
+RULE_VERSION = "meterback/1.1.0"
 
 USAGE_QUANT = Decimal("0.001")
 MONEY_QUANT = Decimal("0.01")
@@ -46,7 +46,8 @@ READ_TYPE_ALIASES = {
     "e": "E", "估抄": "E", "估算": "E",
 }
 
-STAGES = ("ingest", "contract", "quality", "restore", "allocate", "reconcile", "export")
+STAGES = ("ingest", "contract", "quality", "restore", "allocate", "reconcile",
+          "park", "export")
 STAGE_LABELS = {
     "ingest": "采信",
     "contract": "契约",
@@ -54,9 +55,10 @@ STAGE_LABELS = {
     "restore": "还原",
     "allocate": "切分",
     "reconcile": "对账",
+    "park": "总分",
     "export": "导出",
 }
-STAGE_FLOW = "采信 → 契约 → 质量 → 还原 → 切分 → 对账 → 导出"
+STAGE_FLOW = "采信 → 契约 → 质量 → 还原 → 切分 → 对账 → 总分 → 导出"
 
 # 列契约：规范列名 → 可接受的别名（GBK 导出的表头是中文）
 COLUMN_ALIASES = {
@@ -80,10 +82,18 @@ SAMPLES = {
     "readings_header_only.csv": "仅表头",
     "readings_blank.csv": "全空行",
     "readings_bad_header.csv": "表头缺列",
+    "readings_park.csv": "园区总分样例 · 漏抄/投运/待查缺口",
 }
 DEFAULT_SAMPLE = "readings_dirty.csv"
 METERS_FILE = "meters.csv"
 PRICES_FILE = "prices.csv"
+PARK_FILE = "park.csv"
+
+# 园区总分对账：契约里 meter_role 的取值
+ROLE_MASTER = "master"
+ROLE_TENANT = "tenant"
+# 月内覆盖判定：区间对自然月的覆盖天数占比达到该阈值视为全月覆盖
+COVERAGE_FULL_RATIO = Decimal("0.999")
 
 # 单一制电价兜底（prices.csv 缺失时）
 DEFAULT_PRICES = {"TOTAL": Decimal("0.65"), "PEAK": Decimal("1.05"),

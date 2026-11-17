@@ -17,6 +17,7 @@
 | M5 月度切分 | 日权重、最大余额、三分量闭合、账单尾差 | `POST /api/months/allocate`、`/months` |
 | M6 批次与对账 | 全流程、批次历史、四账、失败重试 | `POST /api/runs`、`GET /api/reconcile`、`/`、`/batches` |
 | M7 导出 | 月度 / 区间 / 隔离 / 读数证据 / 运行清单 | `GET /api/export/*`、`/export` |
+| M8 园区总分对账 | 总表-分表守恒、待查缺口单列、漏抄/投运识别、版本化归档 | `GET /api/park/reconcile`、`POST /api/park/archive`、`/park`、`GET /api/export/park-*.csv` |
 
 ## 核心规则
 
@@ -25,7 +26,9 @@
 3. 换表把区间拆成两段：旧表到换表时点，新表首读从零起算。
 4. 估抄行不作锚点、不参与单调判定，落在区间内时给区间打标记。
 5. 区间用量按覆盖天数切到 `[月初, 下月初)`，余数用最大余额法分到 0.001 kWh。
-6. 同月「总表 = 峰 + 平 + 谷」的残差并入最大分量；账单先合计再舍入，分项补差。
+6. 账单先合计再舍入，分项补差。
+7. 园区总分：`总表用量 = 租户可证实用量 + 待查缺口`；差值永远不摊进租户账单，单列待查并按漏抄/投运/未核实归因，缺口费用恒为 0。
+8. 归档采用原子发布与结果摘要批示数：中断保留旧版，同一批示数重跑不新增电量、费用或版本。
 
 ## 定义与已知不覆盖
 
@@ -56,29 +59,39 @@ curl -sS http://localhost:18200/api/health
 | `/readings` | 读数行、隔离区、原因码分布 |
 | `/intervals` | 区间明细、换表事件、标记 |
 | `/months` | 按月分组的分摊、账单 |
+| `/park` | 月度守恒账、租户可证实费用、待查缺口、归档版本 |
 | `/batches` | 运行清单、四账、行数、批次历史 |
-| `/export` | 五份导出与清单字段 |
+| `/export` | 导出与清单字段（含园区月度守恒、租户费用两份 CSV） |
 
 ## 接口
 
-`POST /api/runs`、`POST /api/readings/import`、`GET /api/readings/{batch_id}`、`GET /api/contract`、`POST /api/contract/preview`、`GET /api/quarantine`、`GET /api/quarantine.csv`、`GET /api/reasons`、`POST /api/intervals/rebuild`、`POST /api/months/allocate`、`GET /api/batches`、`GET /api/reconcile`、`POST /api/batches/{batch_id}/retry`、`GET /api/health`、`GET /api/export/{monthly,intervals,quarantine,readings}.csv`、`GET /api/export/manifest.json`。OpenAPI 在 `/docs`。
+`POST /api/runs`、`POST /api/readings/import`、`GET /api/readings/{batch_id}`、`GET /api/contract`、`POST /api/contract/preview`、`GET /api/quarantine`、`GET /api/quarantine.csv`、`GET /api/reasons`、`POST /api/intervals/rebuild`、`POST /api/months/allocate`、`GET /api/batches`、`GET /api/reconcile`、`POST /api/batches/{batch_id}/retry`、`GET /api/health`、`GET /api/park/reconcile`、`POST /api/park/archive`、`GET /api/park/archives`、`GET /api/export/{monthly,intervals,quarantine,readings,park-monthly,park-tenants}.csv`、`GET /api/export/manifest.json`。OpenAPI 在 `/docs`。
 
 ## 目录
 
 ```text
 app/            main.py config.py errors.py reasons.py manifest.py store.py web.py
-app/modules/    m1_ingest m2_contract m3_quality m4_intervals m5_months m6_batches m7_export
-app/templates/  base.html + 6 页
-app/static/     theme.css layout.css components.css app.js table.js pipeline.js
+app/modules/    m1_ingest m2_contract m3_quality m4_intervals m5_months m6_batches m7_export m8_park
+app/templates/  base.html + 7 页
+app/static/     theme.css layout.css components.css app.js table.js pipeline.js park.js
 docs/           DEPTH.md DATA-DICTIONARY.md RUNBOOK.md
-sample_data/    读数样例（脏 / 干净 / GBK / 截断 / 空态）、meters.csv、prices.csv
+sample_data/    读数样例（脏 / 干净 / GBK / 截断 / 空态 / 园区总分）、meters.csv、prices.csv、park.csv
 tests/          conftest.py + 每模块一个测试文件 + test_e2e.py + test_invariants.py
 ```
 
 ## 测试
 
 ```bash
-docker compose exec -T app python -m pytest -q     # 76 passed
+docker compose exec -T app python -m pytest -q     # 全量（含 M8 与 HTTP 用例）
 ```
 
-规则版本：`RULE_VERSION`（`app/config.py`）。改规则要同步加测试，否则同一份输入会出现两个批次。
+规则版本：`RULE_VERSION`（`app/config.py`，当前 `meterback/1.1.0`）。改规则要同步加测试，否则同一份输入会出现两个批次。
+
+## 园区总分对账演示
+
+样例 `readings_park.csv`（配 `park.csv`，1 只园区总表 PM01 + 4 只租户分表 T01-T04）：
+
+1. 2026-01：T03 尚未投运被剔除，其余分表之和等于总表，守恒无缺口。
+2. 2026-02：T01 漏抄（长区间穿过、当月无示数闭合）不计可证实用量、不出账单；T03 月中投运按部分覆盖确认；差值 250 kWh 单列待查缺口，缺口费用为 0。
+3. 2026-03：T01 补抄恢复出账，剩余 50 kWh 无法归因，标 `K_GAP_UNVERIFIED`。
+4. `/park` 页与两份园区 CSV 同样区分「租户可证实费用」与「待查缺口」；归档按钮产生版本化快照，重复提交命中同一批示数。

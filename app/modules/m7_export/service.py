@@ -50,12 +50,38 @@ def manifest_json(settings, store, batch_id: str | None = None) -> tuple[str, st
     return manifest_out.render_json(payload), f"manifest-{ident}.json"
 
 
+def park_monthly_csv(settings, store, batch_id: str | None = None) -> tuple[str, str]:
+    from ..m8_park import csv_rows, service as m8_service
+    batch, ident = _context(settings, store, batch_id)
+    result = m8_service.run(settings, store, ident)
+    if not result["enabled"]:
+        raise errors.NotFound("该批次没有园区契约，无总分账可导出",
+                              code="E_BATCH_NOT_FOUND")
+    body = csv_out.render(csv_rows.PARK_MONTH_HEADER,
+                          csv_rows.month_rows(result["months"]))
+    return body, f"park-monthly-{ident}.csv"
+
+
+def park_tenants_csv(settings, store, batch_id: str | None = None) -> tuple[str, str]:
+    from ..m8_park import csv_rows, service as m8_service
+    batch, ident = _context(settings, store, batch_id)
+    result = m8_service.run(settings, store, ident)
+    if not result["enabled"]:
+        raise errors.NotFound("该批次没有园区契约，无租户账可导出",
+                              code="E_BATCH_NOT_FOUND")
+    body = csv_out.render(csv_rows.PARK_TENANT_HEADER,
+                          csv_rows.tenant_rows(result["tenants"]))
+    return body, f"park-tenants-{ident}.csv"
+
+
 EXPORTS = {
     "monthly": ("月度分摊 CSV", monthly_csv, "text/csv; charset=utf-8"),
     "intervals": ("区间还原 CSV", intervals_csv, "text/csv; charset=utf-8"),
     "quarantine": ("隔离区 CSV", quarantine_csv, "text/csv; charset=utf-8"),
     "readings": ("读数证据 CSV", readings_csv, "text/csv; charset=utf-8"),
     "manifest": ("运行清单 JSON", manifest_json, "application/json; charset=utf-8"),
+    "park_monthly": ("园区月度守恒 CSV", park_monthly_csv, "text/csv; charset=utf-8"),
+    "park_tenants": ("园区租户费用 CSV", park_tenants_csv, "text/csv; charset=utf-8"),
 }
 
 
@@ -76,9 +102,19 @@ def page_context(settings, store, batch) -> dict:
         {"key": "manifest", "label": "运行清单 JSON", "href": "/api/export/manifest.json",
          "rows": 1},
     ]
+    park_months = store.load_park_months(ident)
+    park_enabled = bool(park_months)
+    if park_enabled:
+        files.append({"key": "park_monthly", "label": "园区月度守恒 CSV",
+                      "href": "/api/export/park-monthly.csv",
+                      "rows": len(park_months)})
+        files.append({"key": "park_tenants", "label": "园区租户费用 CSV",
+                      "href": "/api/export/park-tenants.csv",
+                      "rows": counts["park_tenants"]})
     return {
         "files": files,
         "manifest_summary": manifest_out.summary(
             manifest_out.build(store, batch, store.load_manifest(ident))),
         "counts": counts,
+        "park_enabled": park_enabled,
     }

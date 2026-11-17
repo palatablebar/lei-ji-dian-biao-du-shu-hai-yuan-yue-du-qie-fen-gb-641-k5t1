@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block body %}
+<section class="page-head">
+  <div>
+    <h1 class="page-title">总分对账</h1>
+    <p class="page-meta mono">
+      {% if batch %}{{ batch.batch_id }} · {{ batch.sample }}{% else %}未运行{% endif %}
+      <span class="dot-sep">·</span>总表 = 租户可证实用量 + 待查缺口
+    </p>
+  </div>
+  <div class="actions">
+    <button class="btn btn-primary" id="park-archive-button" type="button"
+      {% if not park.enabled %}disabled{% endif %}>归档本月度结果</button>
+    <a class="btn btn-ghost" href="/api/export/park-monthly.csv">月度守恒 CSV</a>
+    <a class="btn btn-ghost" href="/api/export/park-tenants.csv">租户费用 CSV</a>
+  </div>
+</section>
+
+<div class="notice" id="notice" role="status" hidden></div>
+
+{% if not batch %}
+<section class="empty"><p class="empty-line">没有对账结果，先跑一次处理。</p></section>
+{% elif not park.enabled %}
+<section class="empty">
+  <p class="empty-line">该批次没有园区契约 park.csv，不做总分对账；七模块结果不受影响。</p>
+</section>
+{% else %}
+<section class="kpis" aria-label="园区合计">
+  <div class="kpi"><span class="kpi-label">对账月份</span><span class="kpi-value mono">{{ park.stats.month_count }}</span></div>
+  <div class="kpi"><span class="kpi-label">总表用量</span><span class="kpi-value mono">{{ park.stats.master_usage_total|kwh }}</span><span class="kpi-unit">kWh</span></div>
+  <div class="kpi"><span class="kpi-label">租户可证实</span><span class="kpi-value mono">{{ park.stats.verified_usage_total|kwh }}</span><span class="kpi-unit">kWh</span></div>
+  <div class="kpi"><span class="kpi-label">待查缺口</span><span class="kpi-value mono strong">{{ park.stats.gap_usage_total|kwh }}</span><span class="kpi-unit">kWh</span></div>
+  <div class="kpi"><span class="kpi-label">租户费用合计</span><span class="kpi-value mono">{{ park.stats.verified_amount_total|yuan }}</span><span class="kpi-unit">元</span></div>
+  <div class="kpi"><span class="kpi-label">守恒</span><span class="kpi-value mono">{% if park.stats.all_conserved %}是{% else %}否{% endif %}</span></div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2 class="panel-title">月度守恒账</h2>
+    <span class="panel-sub mono">缺口单列，不计入任何租户账单</span>
+  </div>
+  <div class="table-wrap">
+    <table class="table table-dense">
+      <thead><tr>
+        <th>月份</th><th>总表号</th><th class="num">总表用量</th>
+        <th class="num">租户可证实</th><th class="num">可证实费用</th>
+        <th class="num">待查缺口</th><th class="num">缺口费用</th>
+        <th>状态</th><th>守恒</th><th>缺口归因</th>
+      </tr></thead>
+      <tbody>
+        {% for row in park.months %}
+        <tr>
+          <td class="mono">{{ row.month }}</td>
+          <td class="mono">{{ row.master_meter_id or "—" }}</td>
+          <td class="num mono">{{ row.master_usage_kwh|kwh }}</td>
+          <td class="num mono">{{ row.verified_usage_kwh|kwh }}</td>
+          <td class="num mono">{{ row.verified_amount_yuan|yuan }}</td>
+          <td class="num mono strong gap-cell">{{ row.gap_kwh|kwh }}</td>
+          <td class="num mono">{{ row.gap_amount_yuan|yuan }}</td>
+          <td><span class="badge badge-{{ 'ok' if row.status == 'balanced' else ('warn' if row.status == 'gap' else 'bad') }}">{{ status_label(row.status) }}</span></td>
+          <td>{% if row.conservation_ok %}<span class="badge badge-ok">是</span>{% else %}<span class="badge badge-bad">否</span>{% endif %}</td>
+          <td class="cell-note">{{ gap_label(row.gap_codes) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2 class="panel-title">租户可证实费用（只含分表自身示数）</h2>
+    <span class="panel-sub mono">漏抄月份不出账单，不摊缺口</span>
+  </div>
+  <div class="table-wrap">
+    <table class="table table-dense" data-sortable>
+      <thead><tr>
+        <th data-key="month">月份</th><th data-key="meter_id">分表号</th><th>租户</th>
+        <th data-key="usage_kwh" class="num">可证实用量</th><th class="num">分摊口径</th>
+        <th data-key="amount_yuan" class="num">费用</th>
+        <th class="num">覆盖天数</th><th class="num">覆盖率</th><th>账单</th><th>标记</th>
+      </tr></thead>
+      <tbody>
+        {% for row in park.tenants %}
+        <tr>
+          <td class="mono">{{ row.month }}</td>
+          <td class="mono">{{ row.meter_id }}</td>
+          <td>{{ row.tenant_name }}</td>
+          <td class="num mono strong">{{ row.usage_kwh|kwh }}</td>
+          <td class="num mono">{{ row.allocated_kwh|kwh }}</td>
+          <td class="num mono strong">{{ row.amount_yuan|yuan }}</td>
+          <td class="num mono">{{ row.covered_days|dec(3) }} / {{ row.month_days|dec(0) }}</td>
+          <td class="num mono">{{ (row.coverage_ratio * 100)|dec(2) }}%</td>
+          <td>
+            {% if row.not_yet_activated %}<span class="badge badge-plain">尚未投运</span>
+            {% elif row.bill_missing %}<span class="badge badge-warn">漏抄无账单</span>
+            {% else %}<span class="badge badge-ok">已出账</span>{% endif %}
+          </td>
+          <td class="cell-flags">{% for code in row.flags %}<span class="chip">{{ reason_label(code) }}</span>{% endfor %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2 class="panel-title">归档版本</h2>
+    <span class="panel-sub mono">{{ archives|length }} 个版本 · 同批示数重复提交不新增</span>
+  </div>
+  {% if archives %}
+  <div class="table-wrap">
+    <table class="table table-dense">
+      <thead><tr><th>归档号</th><th>月份</th><th class="num">版本</th><th>归档时间</th><th>结果摘要</th><th>文件</th></tr></thead>
+      <tbody>
+        {% for item in archives %}
+        <tr>
+          <td class="mono">{{ item.archive_id }}</td>
+          <td class="mono">{{ item.month }}</td>
+          <td class="num mono">v{{ item.version }}</td>
+          <td class="mono">{{ item.archived_at|localdt }}</td>
+          <td class="mono cell-raw" title="{{ item.result_digest }}">{{ item.result_digest[:12] }}</td>
+          <td class="mono">{{ item.filename }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-line">尚未归档。归档采用原子发布，中断不会破坏上一版。</p>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script src="/static/app.js" type="module"></script>
+<script src="/static/table.js" type="module"></script>
+<script src="/static/park.js" type="module"></script>
+{% endblock %}

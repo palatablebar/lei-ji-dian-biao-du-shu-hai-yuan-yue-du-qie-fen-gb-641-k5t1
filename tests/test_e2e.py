@@ -13,7 +13,8 @@ def test_full_pipeline_over_http(client):
     assert int(payload["totals"]["valid"]) == expected.VALID
     assert int(payload["totals"]["quarantine"]) == expected.QUARANTINE
 
-    for path in ("/", "/readings", "/intervals", "/months", "/batches", "/export"):
+    for path in ("/", "/readings", "/intervals", "/months", "/park",
+                 "/batches", "/export"):
         page = client.get(path)
         assert page.status_code == 200, path
         assert "meterback" in page.text
@@ -54,9 +55,11 @@ def test_failure_inputs_return_4xx_with_code(client):
 
 
 def test_pages_render_without_any_batch(client):
-    for path in ("/", "/readings", "/intervals", "/months", "/batches", "/export"):
+    for path in ("/", "/readings", "/intervals", "/months", "/park",
+                 "/batches", "/export"):
         page = client.get(path)
         assert page.status_code == 200
         assert "empty-line" in page.text
     assert client.get("/api/quarantine").json()["rows"] == []
     assert client.get("/api/reconcile").json()["accounts"] == []
+    assert client.get("/api/park/reconcile").json()["enabled"] is False

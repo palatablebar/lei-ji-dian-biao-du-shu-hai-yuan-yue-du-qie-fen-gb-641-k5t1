@@ -22,6 +22,7 @@ NAV = (
     ("/readings", "读数诊断", "readings"),
     ("/intervals", "区间还原", "intervals"),
     ("/months", "月度分摊", "months"),
+    ("/park", "总分对账", "park"),
     ("/batches", "批次对账", "batches"),
     ("/export", "导出", "export"),
 )
@@ -31,6 +32,8 @@ STATUS_LABELS = {
     "valid": "有效", "estimate": "估抄", "quarantine": "隔离",
     "normal": "常规", "rollover": "满量翻转", "replacement_first": "新表首读",
     "replacement_last": "换表末读", "ok": "就绪", "skipped": "跳过",
+    "balanced": "守恒", "gap": "有待查缺口", "abnormal": "分表超总表",
+    "unreconciled": "总表缺失无法对账", "archived": "已归档",
 }
 METHOD_LABELS = {
     "normal": "常规", "rollover": "满量翻转",

@@ -82,3 +82,43 @@
 标记 `K_*`：`K_ROLLOVER`、`K_REPLACEMENT_FIRST`、`K_ESTIMATE_SKIPPED`、`K_CHARSET_FALLBACK`、`K_BOM_STRIPPED`、`K_SEGMENT_SPLIT`、`K_TRUNCATED_TAIL`、`K_TOU_ADJUSTED`、`K_BILL_ROUNDED`、`K_UNIT_ASSUMED`、`K_UNIT_CONVERTED`、`K_DUPLICATE_IDENTICAL`。
 
 唯一来源：`app/reasons.py`；页面与导出的原因文案都从它取。
+
+## 10 园区总分对账（M8，park.csv）
+
+### 10.1 园区契约列
+
+| 列 | 含义 | 约束 |
+|---|---|---|
+| `meter_id` | 表号 | 必须同时存在于 meters.csv，否则 `Q_PARK_TENANT_UNKNOWN` |
+| `meter_role` | 角色 | `master`/`总表`（全园区唯一，重复报 `Q_PARK_MASTER_DUPLICATE`）或 `tenant`/`分表`/`租户`；无法识别报 `Q_PARK_ROLE_UNKNOWN` |
+| `activated_at` | 分表投运时点 | 可空；带偏移，归一 UTC。空表示无投运起点 |
+
+`park.csv` 缺失，或读数未覆盖任何园区表时，M8 阶段标记 `skipped`，其余七模块行为不变。
+
+### 10.2 月度守恒式与裁决
+
+每月（月桶 `[月初, 下月初)`，上海时区）：
+
+```
+园区总表用量 = 租户可证实用量合计 + 待查缺口
+```
+
+- **可证实用量**：仅由分表自身有效示数还原、且当月具备示数证据的用量。
+- **待查缺口（gap_kwh）**：总表减去可证实的差值，单列展示，**永不摊进任何租户账单**，`gap_amount_yuan` 恒为 `0.00`。
+- 月状态：`balanced` 守恒无缺口 / `gap` 有待查缺口 / `abnormal` 分表之和超过总表（不做负缺口抹平，`conservation_ok=false`）/ `unreconciled` 总表缺失无法对账。
+
+### 10.3 漏抄与月中投运
+
+| 情形 | 判定证据 | 处理 |
+|---|---|---|
+| 分表漏抄 | 一条区间跨越 ≥2 个月桶，被穿过的月份（末月补抄除外）当月无数码闭合 | 标记 `K_TENANT_MISSED_READ`；该月可证实用量与费用都为 0，不出账单；日权重摊入量保留在 `allocated_kwh` 供追溯 |
+| 月中投运 | 契约投运时点/首读落在月中，或区间对月桶覆盖率 < 0.999 | 标记 `K_TENANT_PARTIAL_MONTH`；投运前月份为「尚未投运」，零费用且不算漏抄 |
+| 缺口归因 | 有漏抄 → `K_GAP_MISSED_READ`；有投运 → `K_GAP_PARTIAL_MONTH`；都解释不了 → `K_GAP_UNVERIFIED` | 归因码随月度行与 CSV 导出 |
+
+### 10.4 归档（park_archives）
+
+- 归档号 `par-<批次>-<月份>-vNN`，版本号在同批次同月内从 1 递增。
+- 批示数 `archive_key = 批次 + 月份 + 结果摘要 sha256`；同一批示数重复提交命中既有版本，不新增电量、费用或版本。
+- 文件先写 `*.tmp` 再 `os.replace` 原子发布；中断只可能留下未发布临时文件，上一版正式文件与库记录始终完整。
+- 快照冻结当月总表/分表/缺口/费用与输入摘要；后续重算产生新版本，历史版本不被覆盖（原始示数覆盖后旧版仍可回溯）。
+- `unreconciled` 月份禁止归档，抛 `E_ARCHIVE_STATE`。

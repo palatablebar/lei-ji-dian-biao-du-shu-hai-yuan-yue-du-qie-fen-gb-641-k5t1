@@ -17,6 +17,7 @@ from ..m2_contract import service as m2_service
 from ..m3_quality import service as m3_service
 from ..m4_intervals import restore as restore_mod
 from ..m5_months import allocate as allocate_mod
+from ..m8_park import engine, park_contract
 from . import compare, history, resume
 
 
@@ -30,8 +31,10 @@ def run(settings, store, *, sample: str | None = None, mode: str = "full") -> di
     sample_bytes = path.read_bytes()
     meters_bytes = (Path(settings.sample_dir) / config.METERS_FILE).read_bytes()
     prices_bytes = (Path(settings.sample_dir) / config.PRICES_FILE).read_bytes()
+    park_path = Path(settings.sample_dir) / config.PARK_FILE
+    park_bytes = park_path.read_bytes() if park_path.is_file() else b""
     digest = manifest.input_digest(name, sample_bytes, meters_bytes, prices_bytes,
-                                   settings.rule_version)
+                                   settings.rule_version, park_bytes)
     key = manifest.batch_key(name, digest)
 
     if mode != "force":
@@ -139,11 +142,50 @@ def run(settings, store, *, sample: str | None = None, mode: str = "full") -> di
                    "elapsed_ms": _ms(mark),
                    "note": "四账平衡" if reconcile["all_balanced"] else "四账不平"})
 
+    # ---- M8 园区总分对账（无 park.csv 时整段跳过） ----
+    mark = time.perf_counter()
+    park_contracts, park_q = park_contract.load(settings, contracts)
+    park_result: dict | None = None
+    if park_contracts:
+        # 此时尚未落库，直接用内存里的本轮结果重算，保证与本批同源
+        park_result = engine.reconcile(
+            allocations=allocated["allocations"], bills=allocated["bills"],
+            intervals=intervals,
+            readings=quality["valid"] + quality["estimate"],
+            contracts=contracts, park=park_contracts)
+        park_result["quarantine"] = park_q
+        park_result["park_contracts"] = park_contract.payload(park_contracts)
+        if park_result.get("enabled", True):
+            park_result["enabled"] = True
+            quarantine = quarantine + park_q
+            gap_months = park_result["stats"]["gap_month_count"]
+            stages.append({"stage": "park",
+                           "in_count": len(park_result["months"]),
+                           "out_count": len(park_result["months"]) - gap_months
+                           - park_result["stats"]["abnormal_month_count"]
+                           - park_result["stats"]["unreconciled_month_count"],
+                           "quarantine_count": gap_months, "status": "ok",
+                           "elapsed_ms": _ms(mark),
+                           "note": (f"待查缺口 {park_result['stats']['gap_usage_total']} "
+                                    f"kWh · 不计租户费用")})
+        else:
+            park_result = None
+            stages.append({"stage": "park", "in_count": 0, "out_count": 0,
+                           "quarantine_count": 0, "status": "skipped",
+                           "elapsed_ms": _ms(mark),
+                           "note": "读数未覆盖园区表，跳过"})
+    else:
+        stages.append({"stage": "park", "in_count": 0, "out_count": 0,
+                       "quarantine_count": 0, "status": "skipped",
+                       "elapsed_ms": _ms(mark), "note": "无 park.csv，跳过"})
+
     # ---- M7 导出（文件由 GET 接口按需生成） ----
     mark = time.perf_counter()
+    export_count = 6 if park_result is not None else 4
     stages.append({"stage": "export", "in_count": len(allocated["allocations"]),
-                   "out_count": 4, "quarantine_count": 0, "status": "ok",
-                   "elapsed_ms": _ms(mark), "note": "4 个导出文件"})
+                   "out_count": export_count, "quarantine_count": 0, "status": "ok",
+                   "elapsed_ms": _ms(mark),
+                   "note": f"{export_count} 个导出文件"})
 
     finished_at = history.iso(history.now_utc())
     elapsed_ms = _ms(t0)
@@ -167,17 +209,35 @@ def run(settings, store, *, sample: str | None = None, mode: str = "full") -> di
         "balanced": "是" if reconcile["all_balanced"] else "否",
         "reconcile_json": json.dumps(reconcile, ensure_ascii=False, default=str),
     }
+    manifest_inputs = [
+        {"name": name, "sha256": ingested.digest,
+         "bytes": ingested.byte_len, "encoding": ingested.encoding},
+        {"name": config.METERS_FILE,
+         "sha256": manifest.digest_bytes(meters_bytes),
+         "bytes": len(meters_bytes), "encoding": "utf-8"},
+        {"name": config.PRICES_FILE,
+         "sha256": manifest.digest_bytes(prices_bytes),
+         "bytes": len(prices_bytes), "encoding": "utf-8"}]
+    if park_result is not None:
+        totals.update({
+            "park_enabled": "是",
+            "park_master_usage": park_result["stats"]["master_usage_total"],
+            "park_verified_usage": park_result["stats"]["verified_usage_total"],
+            "park_gap_usage": park_result["stats"]["gap_usage_total"],
+            "park_verified_amount": park_result["stats"]["verified_amount_total"],
+            "park_gap_month_count": park_result["stats"]["gap_month_count"],
+            "park_conserved": "是" if park_result["stats"]["all_conserved"] else "否",
+        })
+        manifest_inputs.append({
+            "name": config.PARK_FILE,
+            "sha256": manifest.digest_bytes(park_bytes),
+            "bytes": len(park_bytes), "encoding": "utf-8"})
+    else:
+        totals.update({"park_enabled": "否"})
     manifest_json = manifest.build(
         run_id=batch["run_id"], batch_id=batch_id, batch_key_value=key,
         settings=settings, sample=name, digest=digest,
-        inputs=[{"name": name, "sha256": ingested.digest,
-                 "bytes": ingested.byte_len, "encoding": ingested.encoding},
-                {"name": config.METERS_FILE,
-                 "sha256": manifest.digest_bytes(meters_bytes),
-                 "bytes": len(meters_bytes), "encoding": "utf-8"},
-                {"name": config.PRICES_FILE,
-                 "sha256": manifest.digest_bytes(prices_bytes),
-                 "bytes": len(prices_bytes), "encoding": "utf-8"}],
+        inputs=manifest_inputs,
         params={"sample": name, "mode": mode, "rule_version": settings.rule_version},
         started_at=started_at, finished_at=finished_at, elapsed_ms=elapsed_ms,
         stages=stages, counters=history.counters(
@@ -213,7 +273,8 @@ def run(settings, store, *, sample: str | None = None, mode: str = "full") -> di
         quarantine=quarantine,
         stages=stages,
         totals=totals,
-        manifest_json=manifest_json)
+        manifest_json=manifest_json,
+        park_result=park_result)
 
     batch.update(status="done", finished_at=finished_at)
     return {

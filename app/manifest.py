@@ -29,13 +29,15 @@ def digest_parts(parts: list[str]) -> str:
 
 
 def input_digest(sample_name: str, sample_bytes: bytes, meters_bytes: bytes,
-                 prices_bytes: bytes, rule_version: str) -> str:
+                 prices_bytes: bytes, rule_version: str,
+                 park_bytes: bytes = b"") -> str:
     return digest_parts([
         rule_version,
         sample_name,
         digest_bytes(sample_bytes),
         digest_bytes(meters_bytes),
         digest_bytes(prices_bytes),
+        digest_bytes(park_bytes),
     ])
 
 

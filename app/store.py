@@ -74,6 +74,33 @@ CREATE TABLE IF NOT EXISTS totals (
 CREATE TABLE IF NOT EXISTS manifests (
     batch_id TEXT PRIMARY KEY, json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS park_months (
+    batch_id TEXT NOT NULL, month TEXT NOT NULL, master_meter_id TEXT,
+    master_usage_kwh TEXT NOT NULL, master_present INTEGER NOT NULL,
+    verified_usage_kwh TEXT NOT NULL, verified_amount_yuan TEXT NOT NULL,
+    gap_kwh TEXT NOT NULL, gap_amount_yuan TEXT NOT NULL,
+    status TEXT NOT NULL, conservation_ok INTEGER NOT NULL,
+    gap_codes_json TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (batch_id, month)
+);
+CREATE TABLE IF NOT EXISTS park_tenants (
+    batch_id TEXT NOT NULL, month TEXT NOT NULL, meter_id TEXT NOT NULL,
+    tenant_name TEXT NOT NULL, usage_kwh TEXT NOT NULL,
+    allocated_kwh TEXT NOT NULL DEFAULT '0.000',
+    amount_yuan TEXT NOT NULL,
+    covered_days TEXT NOT NULL, month_days TEXT NOT NULL,
+    coverage_ratio TEXT NOT NULL, bill_missing INTEGER NOT NULL,
+    flags_json TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (batch_id, month, meter_id)
+);
+CREATE TABLE IF NOT EXISTS park_archives (
+    archive_id TEXT PRIMARY KEY, batch_id TEXT NOT NULL, month TEXT NOT NULL,
+    version INTEGER NOT NULL, archive_key TEXT NOT NULL UNIQUE,
+    result_digest TEXT NOT NULL, filename TEXT NOT NULL,
+    archived_at TEXT NOT NULL, snapshot_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_park_archives_batch
+    ON park_archives(batch_id, month, version);
 """
 
 
@@ -179,11 +206,12 @@ class Store:
     def save_run(self, *, batch: dict, meters: list[dict], readings: list[dict],
                  intervals: list[dict], allocations: list[dict], bills: list[dict],
                  quarantine: list[dict], stages: list[dict], totals: dict,
-                 manifest_json: dict) -> None:
+                 manifest_json: dict, park_result: dict | None = None) -> None:
         b = batch["batch_id"]
         with self.connect() as conn:
             for table in ("meters", "readings", "intervals", "allocations", "bills",
-                          "quarantine", "stages", "totals"):
+                          "quarantine", "stages", "totals",
+                          "park_months", "park_tenants"):
                 conn.execute(f"DELETE FROM {table} WHERE batch_id=?", (b,))
             for m in meters:
                 conn.execute(
@@ -249,6 +277,36 @@ class Store:
             for key, value in totals.items():
                 conn.execute("INSERT INTO totals (batch_id,key,value) VALUES (?,?,?)",
                              (b, key, str(value)))
+            if park_result:
+                for item in park_result.get("months", []):
+                    conn.execute(
+                        """INSERT INTO park_months (batch_id,month,master_meter_id,
+                            master_usage_kwh,master_present,verified_usage_kwh,
+                            verified_amount_yuan,gap_kwh,gap_amount_yuan,status,
+                            conservation_ok,gap_codes_json)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (b, item["month"], item.get("master_meter_id"),
+                         str(item["master_usage_kwh"]),
+                         1 if item["master_present"] else 0,
+                         str(item["verified_usage_kwh"]),
+                         str(item["verified_amount_yuan"]), str(item["gap_kwh"]),
+                         str(item["gap_amount_yuan"]), item["status"],
+                         1 if item["conservation_ok"] else 0,
+                         json.dumps(item.get("gap_codes", []), ensure_ascii=False)))
+                for item in park_result.get("tenants", []):
+                    conn.execute(
+                        """INSERT INTO park_tenants (batch_id,month,meter_id,tenant_name,
+                            usage_kwh,allocated_kwh,amount_yuan,covered_days,month_days,
+                            coverage_ratio,bill_missing,flags_json)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (b, item["month"], item["meter_id"], item["tenant_name"],
+                         str(item["usage_kwh"]), str(item.get("allocated_kwh",
+                                                                item["usage_kwh"])),
+                         str(item["amount_yuan"]),
+                         str(item["covered_days"]), str(item["month_days"]),
+                         str(item["coverage_ratio"]),
+                         1 if item.get("bill_missing") else 0,
+                         json.dumps(item.get("flags", []), ensure_ascii=False)))
             conn.execute(
                 "INSERT INTO manifests (batch_id,json) VALUES (?,?) "
                 "ON CONFLICT(batch_id) DO UPDATE SET json=excluded.json",
@@ -341,8 +399,92 @@ class Store:
                                (batch_id,)).fetchone()
         return json.loads(row["json"]) if row else None
 
+    # ---------- M8 园区总分 ----------
+    def load_park_months(self, batch_id: str) -> list[dict]:
+        rows = self._all(
+            "SELECT * FROM park_months WHERE batch_id=? ORDER BY month", (batch_id,))
+        for row in rows:
+            for key in ("master_usage_kwh", "verified_usage_kwh",
+                        "verified_amount_yuan", "gap_kwh", "gap_amount_yuan"):
+                row[key] = _dec(row[key])
+            row["master_present"] = bool(row["master_present"])
+            row["conservation_ok"] = bool(row["conservation_ok"])
+            row["gap_codes"] = json.loads(row.pop("gap_codes_json") or "[]")
+        return rows
+
+    def load_park_tenants(self, batch_id: str) -> list[dict]:
+        rows = self._all(
+            "SELECT * FROM park_tenants WHERE batch_id=? ORDER BY month, meter_id",
+            (batch_id,))
+        for row in rows:
+            for key in ("usage_kwh", "allocated_kwh", "amount_yuan", "covered_days",
+                        "month_days", "coverage_ratio"):
+                row[key] = _dec(row[key])
+            row["bill_missing"] = bool(row["bill_missing"])
+            row["flags"] = json.loads(row.pop("flags_json") or "[]")
+        return rows
+
+    def find_park_archive_by_key(self, archive_key: str) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM park_archives WHERE archive_key=?",
+                (archive_key,)).fetchone()
+        return dict(row) if row else None
+
+    def next_park_archive_version(self, batch_id: str, month: str) -> int:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(version), 0) AS v FROM park_archives "
+                "WHERE batch_id=? AND month=?", (batch_id, month)).fetchone()
+        return int(row["v"]) + 1
+
+    def insert_park_archive(self, *, archive_id: str, batch_id: str, month: str,
+                            version: int, archive_key: str, result_digest: str,
+                            filename: str, archived_at: str,
+                            snapshot_json: dict) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO park_archives (archive_id,batch_id,month,version,
+                    archive_key,result_digest,filename,archived_at,snapshot_json)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (archive_id, batch_id, month, version, archive_key, result_digest,
+                 filename, archived_at,
+                 json.dumps(snapshot_json, ensure_ascii=False, default=str)))
+
+    def load_park_archive(self, archive_id: str) -> dict:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM park_archives WHERE archive_id=?",
+                               (archive_id,)).fetchone()
+        if row is None:
+            raise KeyError(archive_id)
+        data = dict(row)
+        data["snapshot"] = json.loads(data.pop("snapshot_json"))
+        return data
+
+    def list_park_archives(self, batch_id: str | None = None) -> list[dict]:
+        sql = ("SELECT archive_id,batch_id,month,version,archive_key,result_digest,"
+               "filename,archived_at FROM park_archives")
+        args: tuple = ()
+        if batch_id:
+            sql += " WHERE batch_id=?"
+            args = (batch_id,)
+        sql += " ORDER BY batch_id, month, version"
+        return self._all(sql, args)
+
+    def count_park_archives(self, batch_id: str | None = None) -> int:
+        with self.connect() as conn:
+            if batch_id:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM park_archives WHERE batch_id=?",
+                    (batch_id,)).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM park_archives").fetchone()
+        return row["n"]
+
     def count_rows(self, batch_id: str) -> dict:
-        tables = ("meters", "readings", "intervals", "allocations", "bills", "quarantine")
+        tables = ("meters", "readings", "intervals", "allocations", "bills",
+                  "quarantine", "park_months", "park_tenants")
         with self.connect() as conn:
             return {t: conn.execute(
                 f"SELECT COUNT(*) AS n FROM {t} WHERE batch_id=?", (batch_id,)

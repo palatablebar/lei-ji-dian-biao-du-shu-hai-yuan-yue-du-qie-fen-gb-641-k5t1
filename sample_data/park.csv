@@ -1,0 +1,6 @@
+meter_id,meter_role,activated_at
+PM01,master,
+T01,tenant,
+T02,tenant,
+T03,tenant,2026-02-20T00:00:00+08:00
+T04,tenant,

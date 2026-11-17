@@ -153,6 +153,7 @@
 .table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .table .unit { color: var(--ink-faint); font-size: 11px; margin-left: 3px; }
 .table .strong { font-weight: 600; }
+.gap-cell { color: var(--warn); }
 .table-wrap { max-height: 520px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); }
 .cell-note { color: var(--ink-muted); font-size: 12px; max-width: 380px; }
 .cell-raw { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

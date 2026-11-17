@@ -15,11 +15,12 @@ curl -sS http://localhost:18200/api/health
 ## 2 主流程
 
 1. 总览页选 `readings_dirty.csv`（脏样例，13 类问题），点「开始处理」。
-2. 阶段卡显示七段「进 / 出 / 隔离」；任一阶段失败可点该卡的「重试」。
+2. 阶段卡显示八段「进 / 出 / 隔离」；任一阶段失败可点该卡的「重试」。无 `park.csv` 或读数未覆盖园区表时，「总分」段显示跳过。
 3. 读数诊断页看逐行诊断与隔离区，点「隔离区 CSV」下载证据。
 4. 区间还原页看翻转、换表末段、新表首读与标记，可点「重算区间」。
 5. 月度分摊页看每月合计、账单与尾差，可点「重算分摊」。
-6. 批次对账页看四账与运行清单；导出页下载五份文件。
+6. 总分对账页看月度守恒账、租户可证实费用与单列的待查缺口，可归档并下载两份园区 CSV。
+7. 批次对账页看四账与运行清单；导出页下载文件（园区批次额外含两份园区 CSV）。
 
 命令行同一套接口：
 
@@ -30,6 +31,25 @@ curl -sS -X POST http://localhost:18200/api/runs \
 curl -sS http://localhost:18200/api/reconcile | python3 -m json.tool
 curl -sS -o /tmp/monthly.csv http://localhost:18200/api/export/monthly.csv
 ```
+
+### 2.1 园区总分对账
+
+选 `readings_park.csv` 跑全流程后，进入「总分对账」页：
+
+- 月度守恒账逐行给出总表用量、租户可证实用量/费用、待查缺口与归因；缺口费用恒为 0，不进任何租户账单。
+- 漏抄分表显示「漏抄无账单」，月中投运显示覆盖率与投运标记。
+- 点「归档本月度结果」生成版本化快照；同一批示数重复归档不新增版本，旧版始终保留在 `park_archives/`。
+
+```bash
+curl -sS -X POST http://localhost:18200/api/runs \
+  -H 'Content-Type: application/json' -d '{"sample":"readings_park.csv"}'
+curl -sS http://localhost:18200/api/park/reconcile | python3 -m json.tool
+curl -sS -X POST http://localhost:18200/api/park/archive -d '{}' \
+  -H 'Content-Type: application/json'
+curl -sS -o /tmp/park-monthly.csv http://localhost:18200/api/export/park-monthly.csv
+```
+
+待查缺口只提示核查方向（漏抄/投运/未核实），不自动向租户补收；核查后如需调整，应更正原始示数重跑，产生新批次与新归档版本。
 
 ## 3 常见操作
 
